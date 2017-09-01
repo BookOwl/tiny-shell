@@ -1,6 +1,7 @@
 extern crate rustyline;
 extern crate combine;
 use combine::combinator as cc;
+use combine::char::spaces;
 use combine::Parser;
 use std::iter::Iterator;
 use std::process;
@@ -40,6 +41,7 @@ impl Iterator for CmdReader {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Command {
     Command(Vec<String>),
+    PipeLine(Vec<Command>),
 }
 impl Command {
     fn execute(&self) -> Result<std::process::Child, String> {
@@ -53,24 +55,30 @@ impl Command {
                 } else {
                     Err(format!("Invalid command {:?}", args))
                 }
-            }
+            },
+            Command::PipeLine(ref pipeline) => unimplemented!()
         }
     }
 }
 
 fn parse_cmd(line: &str) -> Command {
-    let any_nonquoated = || cc::satisfy(|c: char| !c.is_whitespace() && c != '\'');
-    let unquoated_arg     = || cc::many1::<String, _>(any_nonquoated());
-    let quoated_arg       = || cc::between(combine::char::char('\''), combine::char::char('\''), cc::many::<String, _>(cc::satisfy(|c: char| c != '\'')));
-    let arg               = || combine::try(unquoated_arg()).or(quoated_arg()).skip(combine::char::spaces());
-    let cmd               = || cc::many1::<Vec<_>, _>(arg()).map(|args| Command::Command(args));
-    (cmd(), cc::eof()).parse(combine::State::new(line)).map(|((x, _), _)| x).unwrap()
+    let any_nonquoated = || cc::satisfy(|c: char| !c.is_whitespace() && c != '\'' && c != '|');
+    let unquoated_arg  = || cc::many1::<String, _>(any_nonquoated());
+    let quoated_arg    = || cc::between(combine::char::char('\''), combine::char::char('\''), cc::many::<String, _>(cc::satisfy(|c: char| c != '\'')));
+    let arg            = || combine::try(unquoated_arg()).or(quoated_arg()).skip(spaces());
+    let cmd            = || cc::many1::<Vec<_>, _>(arg()).map(|args| Command::Command(args));
+    let pipe           = || (spaces(), combine::char::char('|'), spaces());
+    let pipeline_      = || combine::sep_by1(cmd(), pipe());
+    let pipeline       = || (cmd(), pipe(), pipeline_()).map(|(f, _, mut r): (_, _, Vec<_>)| {r.insert(0, f); Command::PipeLine(r)});
+    let cmdline        = || combine::try(pipeline()).or(cmd());
+    (cmdline(), cc::eof()).parse(combine::State::new(line)).map(|((x, _), _)| x).unwrap()
 }
 
 fn main() {
     let cmds = CmdReader::new("> ");
     for line in cmds {
         let command = parse_cmd(&line);
+        println!("{:?}", command);
         command.execute().unwrap().wait().unwrap();
     }
 }
