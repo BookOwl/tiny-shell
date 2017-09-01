@@ -39,13 +39,14 @@ impl Iterator for CmdReader {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Ast {
-    Arg(String)
+    Cmd(Vec<String>),
 }
 
 fn parse_cmd(line: &str) -> Ast {
-    let any_nonwhitespace = ||cc::satisfy(|c: char| !c.is_whitespace());
-    let arg = ||cc::many1::<String, _>(any_nonwhitespace()).map(|x: String| Ast::Arg(x));
-    arg().parse(combine::State::new(line)).map(|(x, _)| x).unwrap()
+    let any_nonwhitespace = || cc::satisfy(|c: char| !c.is_whitespace());
+    let arg = || cc::many1::<String, _>(any_nonwhitespace()).skip(combine::char::spaces());
+    let cmd = || cc::many1::<Vec<_>, _>(arg()).map(|args| Ast::Cmd(args));
+    (cmd(), cc::eof()).parse(combine::State::new(line)).map(|((x, _), _)| x).unwrap()
 }
 
 fn main() {
