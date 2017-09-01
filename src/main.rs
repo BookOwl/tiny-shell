@@ -59,9 +59,11 @@ impl Command {
 }
 
 fn parse_cmd(line: &str) -> Command {
-    let any_nonwhitespace = || cc::satisfy(|c: char| !c.is_whitespace());
-    let arg = || cc::many1::<String, _>(any_nonwhitespace()).skip(combine::char::spaces());
-    let cmd = || cc::many1::<Vec<_>, _>(arg()).map(|args| Command::Command(args));
+    let any_nonquoated = || cc::satisfy(|c: char| !c.is_whitespace() && c != '\'');
+    let unquoated_arg     = || cc::many1::<String, _>(any_nonquoated());
+    let quoated_arg       = || cc::between(combine::char::char('\''), combine::char::char('\''), cc::many::<String, _>(cc::satisfy(|c: char| c != '\'')));
+    let arg               = || combine::try(unquoated_arg()).or(quoated_arg()).skip(combine::char::spaces());
+    let cmd               = || cc::many1::<Vec<_>, _>(arg()).map(|args| Command::Command(args));
     (cmd(), cc::eof()).parse(combine::State::new(line)).map(|((x, _), _)| x).unwrap()
 }
 
