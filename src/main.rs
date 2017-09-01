@@ -1,4 +1,7 @@
 extern crate rustyline;
+extern crate combine;
+use combine::combinator as cc;
+use combine::Parser;
 
 use std::iter::Iterator;
 use rustyline::completion::FilenameCompleter;
@@ -34,10 +37,21 @@ impl Iterator for CmdReader {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Ast {
+    Arg(String)
+}
+
+fn parse_cmd(line: &str) -> Ast {
+    let any_nonwhitespace = ||cc::satisfy(|c: char| !c.is_whitespace());
+    let arg = ||cc::many1::<String, _>(any_nonwhitespace()).map(|x: String| Ast::Arg(x));
+    arg().parse(combine::State::new(line)).map(|(x, _)| x).unwrap()
+}
 
 fn main() {
     let cmds = CmdReader::new("> ");
     for line in cmds {
-        println!("{}", line)
+        let ast = parse_cmd(&line);
+        println!("{:?}", ast)
     }
 }
