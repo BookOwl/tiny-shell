@@ -5,6 +5,9 @@ use combine::char::spaces;
 use combine::Parser;
 use std::iter::Iterator;
 use std::process;
+use std::process::Stdio;
+use std::os::unix::io::AsRawFd;
+use std::os::unix::io::FromRawFd;
 use rustyline::completion::FilenameCompleter;
 
 /// A CmdReader allows iterating over standard input
@@ -39,46 +42,65 @@ impl Iterator for CmdReader {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Command {
-    Command(Vec<String>),
-    PipeLine(Vec<Command>),
+struct Command {
+    args: Vec<String>,
 }
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Pipeline {
+    pipeline: Vec<Command>
+}
+
 impl Command {
-    fn execute(&self) -> Result<std::process::Child, String> {
-        match *self {
-            Command::Command(ref args) => {
-                if let Some((cmd, args)) = args.split_first() {
-                    process::Command::new(cmd)
-                                     .args(args)
-                                     .spawn()
-                                     .map_err(|e| format!("{}", e))
-                } else {
-                    Err(format!("Invalid command {:?}", args))
-                }
-            },
-            Command::PipeLine(ref pipeline) => unimplemented!()
+    fn execute(&self, stdin: Stdio, stdout: Stdio) -> Result<std::process::Child, String> {
+        if let Some((cmd, args)) = self.args.split_first() {
+            Ok(process::Command::new(cmd)
+                                .args(args)
+                                .stdin(stdin)
+                                .stdout(stdout)
+                                .spawn()
+                                .map_err(|e| format!("{}", e))?)
+        } else {
+            Err(format!("Invalid command {:?}", self.args))
         }
     }
 }
 
-fn parse_cmd(line: &str) -> Command {
+impl Pipeline {
+    fn execute(&self, stdin: Stdio, stdout: Stdio) -> Result<Vec<std::process::Child>, String> {
+        let mut children = Vec::with_capacity(self.pipeline.len());
+        let mut stdin = stdin;
+        let (last, pipeline) = self.pipeline.split_last().unwrap();
+        for c in pipeline {
+            let child = c.execute(stdin, Stdio::piped())?;
+            let handle = child.stdout.as_ref().ok_or_else(|| format!("Could not get child stdout"))?.as_raw_fd();
+            stdin = unsafe { Stdio::from_raw_fd(handle) };
+            children.push(child);
+        }
+        children.push(last.execute(stdin, stdout)?);
+        Ok(children)
+    }
+}
+
+fn parse_cmd(line: &str) -> Pipeline {
     let any_nonquoated = || cc::satisfy(|c: char| !c.is_whitespace() && c != '\'' && c != '|');
     let unquoated_arg  = || cc::many1::<String, _>(any_nonquoated());
     let quoated_arg    = || cc::between(combine::char::char('\''), combine::char::char('\''), cc::many::<String, _>(cc::satisfy(|c: char| c != '\'')));
     let arg            = || combine::try(unquoated_arg()).or(quoated_arg()).skip(spaces());
-    let cmd            = || cc::many1::<Vec<_>, _>(arg()).map(|args| Command::Command(args));
+    let cmd            = || cc::many1::<Vec<_>, _>(arg()).map(|args| Command{args});
     let pipe           = || (spaces(), combine::char::char('|'), spaces());
-    let pipeline_      = || combine::sep_by1(cmd(), pipe());
-    let pipeline       = || (cmd(), pipe(), pipeline_()).map(|(f, _, mut r): (_, _, Vec<_>)| {r.insert(0, f); Command::PipeLine(r)});
-    let cmdline        = || combine::try(pipeline()).or(cmd());
-    (cmdline(), cc::eof()).parse(combine::State::new(line)).map(|((x, _), _)| x).unwrap()
+    let pipeline       = || combine::sep_by1(cmd(), pipe()).map(|pipeline| Pipeline{pipeline});
+    let cmdline        = || pipeline().skip(cc::eof());
+    cmdline().parse(combine::State::new(line)).unwrap().0
 }
 
 fn main() {
     let cmds = CmdReader::new("> ");
     for line in cmds {
         let command = parse_cmd(&line);
-        println!("{:?}", command);
-        command.execute().unwrap().wait().unwrap();
+        let stdin  = Stdio::inherit();
+        let stdout = Stdio::inherit();
+        for mut p in command.execute(stdin, stdout).unwrap() {
+            p.wait().unwrap();
+        }
     }
 }
